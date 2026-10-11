@@ -279,10 +279,23 @@ local function rowIsOnly(stack)
 	return count == 1 and hit
 end
 
-local function nameBoxIs(stack)
+-- TurtleMail blocks SendMailNameEditBox:SetText while TurtleMail_To is set.
+-- Write through its saved SetText, then read the box back.
+local function setRecipient(name)
+	TurtleMail_To = nil
+	if SendMailNameEditBox._SetText then
+		SendMailNameEditBox:_SetText(name)
+	else
+		SendMailNameEditBox:SetText(name)
+	end
+	if MailSubjectEditBox then
+		MailSubjectEditBox:SetText(name)
+	end
+end
+
+local function recipientIs(name)
 	local typed = SendMailNameEditBox:GetText()
-	local subject = MailSubjectEditBox and MailSubjectEditBox:GetText() or ""
-	return namesMatch(typed, stack.name) and namesMatch(subject, stack.name)
+	return namesMatch(typed, name)
 end
 
 -- A bank alt keeps the category named after itself and mails the rest.
@@ -411,6 +424,7 @@ local function sendOne(stack)
 		return false
 	end
 	MailFrameTab_OnClick(2)
+	TurtleMail_To = nil
 	TurtleMail.sendmail_clear()
 	if not sameStack(stack) then
 		TurtleMail.sendmail_clear()
@@ -426,10 +440,14 @@ local function sendOne(stack)
 		TurtleMail.sendmail_clear()
 		return false
 	end
-	SendMailNameEditBox:SetText(stack.name)
-	MailSubjectEditBox:SetText(stack.name)
-	SendMailBodyEditBox:SetText("")
-	if not nameBoxIs(stack) then
+	setRecipient(stack.name)
+	if SendMailBodyEditBox then
+		SendMailBodyEditBox:SetText("")
+	end
+	if not recipientIs(stack.name) then
+		setRecipient(stack.name)
+	end
+	if not recipientIs(stack.name) then
 		TurtleMail.sendmail_clear()
 		return nil
 	end
