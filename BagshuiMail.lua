@@ -167,6 +167,29 @@ local function listedAlt(categories, cats, itemId)
 	return nil
 end
 
+local function isTool(categories, bags, item)
+	if not categories or not categories.list or not item or not item.id then
+		return false
+	end
+	local id, category
+	for id, category in pairs(categories.list) do
+		if category.name and namesMatch(category.name, "tools") and listHasId(category.list, item.id) then
+			return true
+		end
+	end
+	local cached = bags and bags.inventory and item.bagNum and bags.inventory[item.bagNum] and bags.inventory[item.bagNum][item.slotNum]
+	if cached and cached.id == item.id then
+		local shown = categories.list[cached.bagshuiCategoryId]
+		if not shown and tonumber(cached.bagshuiCategoryId) then
+			shown = categories.list[tonumber(cached.bagshuiCategoryId)]
+		end
+		if shown and shown.name and namesMatch(shown.name, "tools") then
+			return true
+		end
+	end
+	return false
+end
+
 local function isJunkItem(item)
 	if item.quality == 0 then
 		return true
@@ -178,6 +201,9 @@ local function isJunkItem(item)
 end
 
 local function classify(categories, cats, bags, item)
+	if isTool(categories, bags, item) then
+		return nil, false
+	end
 	local listed = listedAlt(categories, cats, item.id)
 	if listed then
 		return listed, false
@@ -204,6 +230,9 @@ local function junkBlocked(stack)
 	end
 	local item = liveItem(itemInfo, stack.bag, stack.slot)
 	if not item or item.id ~= stack.id then
+		return true
+	end
+	if isTool(categories, bags, item) then
 		return true
 	end
 	if listedAlt(categories, altCategories(categories), item.id) then
@@ -287,6 +316,29 @@ local function countKept()
 		end
 	end
 	return kept
+end
+
+local function countTools()
+	local bags, categories, itemInfo = bagshuiParts()
+	if not bags or not categories or not itemInfo then
+		return 0
+	end
+	local n = 0
+	local bag
+	for bag = 0, 4 do
+		local slots = GetContainerNumSlots(bag)
+		local slot
+		for slot = 1, slots do
+			local _, count, locked = GetContainerItemInfo(bag, slot)
+			if count and count > 0 and locked ~= 1 then
+				local item = liveItem(itemInfo, bag, slot)
+				if item and isTool(categories, bags, item) then
+					n = n + 1
+				end
+			end
+		end
+	end
+	return n
 end
 
 local function nextStack()
@@ -391,6 +443,13 @@ local function sendOne(stack)
 		stop("Stopped. " .. stack.itemName .. " stays on " .. (UnitName("player") or stack.name) .. ".")
 		return nil
 	end
+	local _, categories, itemInfo = bagshuiParts()
+	local live = itemInfo and liveItem(itemInfo, stack.bag, stack.slot)
+	if live and isTool(categories, Bagshui.components.Bags, live) then
+		TurtleMail.sendmail_clear()
+		stop("Stopped. Refused to send " .. stack.itemName .. ". Tools stay in the bag.")
+		return nil
+	end
 	if not sameStack(stack) or not rowIsOnly(stack) then
 		skipped[stack.bag .. ":" .. stack.slot] = true
 		TurtleMail.sendmail_clear()
@@ -453,8 +512,12 @@ local function beginSend()
 	end
 	skipped = {}
 	local mine = countKept()
+	local tools = countTools()
 	if mine > 0 then
 		say("Keeping " .. mine .. " stacks on " .. UnitName("player") .. ".")
+	end
+	if tools > 0 then
+		say("Keeping " .. tools .. " tool stacks.")
 	end
 	local stack, err = nextStack()
 	if not stack then
