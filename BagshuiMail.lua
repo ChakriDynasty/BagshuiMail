@@ -10,6 +10,7 @@ local ALTS = {
 	madaherb = "Madaherb",
 	madajunk = "Madajunk",
 	madaboe = "Madaboe",
+	madabank = "Madabank",
 }
 
 -- One stack per letter. The recipient is chosen from the item in the slot
@@ -186,6 +187,11 @@ local function onMadajunkList(categories, cats, itemId)
 	return category and listHasId(category.list, itemId)
 end
 
+local function onMadabankList(categories, cats, itemId)
+	local category = categoryNamed(categories, cats, "Madabank")
+	return category and listHasId(category.list, itemId)
+end
+
 local function isTool(categories, bags, item)
 	if not categories or not categories.list or not item or not item.id then
 		return false
@@ -223,6 +229,9 @@ local function classify(categories, cats, bags, item)
 	if isTool(categories, bags, item) then
 		return nil, false
 	end
+	if onMadabankList(categories, cats, item.id) then
+		return "Madabank", false
+	end
 	if onMadajunkList(categories, cats, item.id) then
 		return "Madajunk", false
 	end
@@ -258,6 +267,9 @@ local function junkBlocked(stack)
 		return true
 	end
 	local cats = altCategories(categories)
+	if onMadabankList(categories, cats, item.id) then
+		return true
+	end
 	if onMadajunkList(categories, cats, item.id) then
 		return false
 	end
