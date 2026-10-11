@@ -256,6 +256,39 @@ local function nameBoxIs(stack)
 	return namesMatch(typed, stack.name) and namesMatch(subject, stack.name)
 end
 
+-- A bank alt keeps the category named after itself and mails the rest.
+local function forThisCharacter(who)
+	local me = UnitName("player")
+	return me and who and namesMatch(me, who)
+end
+
+local function countKept()
+	local bags, categories, itemInfo = bagshuiParts()
+	if not bags or not categories or not itemInfo then
+		return 0
+	end
+	local cats = altCategories(categories)
+	local kept = 0
+	local bag
+	for bag = 0, 4 do
+		local slots = GetContainerNumSlots(bag)
+		local slot
+		for slot = 1, slots do
+			local _, count, locked = GetContainerItemInfo(bag, slot)
+			if count and count > 0 and locked ~= 1 then
+				local item = liveItem(itemInfo, bag, slot)
+				if item and not soulbound(item) and not questItem(item) then
+					local who = classify(categories, cats, bags, item)
+					if forThisCharacter(who) then
+						kept = kept + 1
+					end
+				end
+			end
+		end
+	end
+	return kept
+end
+
 local function nextStack()
 	local bags, categories, itemInfo = bagshuiParts()
 	if not bags or not categories or not itemInfo then
@@ -265,7 +298,6 @@ local function nextStack()
 	if getn(cats) == 0 then
 		return nil, "Bagshui has no alt categories."
 	end
-	local me = UnitName("player")
 	local bag
 	for bag = 0, 4 do
 		local slots = GetContainerNumSlots(bag)
@@ -278,7 +310,7 @@ local function nextStack()
 					local item = liveItem(itemInfo, bag, slot)
 					if item and not soulbound(item) and not questItem(item) then
 						local who = classify(categories, cats, bags, item)
-						if who and (not me or not namesMatch(me, who)) then
+						if who and not forThisCharacter(who) then
 							return {
 								bag = bag,
 								slot = slot,
@@ -354,6 +386,11 @@ local function sendOne(stack)
 		stop("Stopped. Refused to send " .. stack.itemName .. " to Madajunk.")
 		return nil
 	end
+	if forThisCharacter(stack.name) then
+		TurtleMail.sendmail_clear()
+		stop("Stopped. " .. stack.itemName .. " stays on " .. (UnitName("player") or stack.name) .. ".")
+		return nil
+	end
 	if not sameStack(stack) or not rowIsOnly(stack) then
 		skipped[stack.bag .. ":" .. stack.slot] = true
 		TurtleMail.sendmail_clear()
@@ -415,9 +452,17 @@ local function beginSend()
 		return
 	end
 	skipped = {}
+	local mine = countKept()
+	if mine > 0 then
+		say("Keeping " .. mine .. " stacks on " .. UnitName("player") .. ".")
+	end
 	local stack, err = nextStack()
 	if not stack then
-		setStatus(err or "Nothing in those categories to send.")
+		if mine > 0 then
+			setStatus("Nothing else to send. " .. mine .. " stacks stay on " .. UnitName("player") .. ".")
+		else
+			setStatus(err or "Nothing in those categories to send.")
+		end
 		return
 	end
 	sending = true
