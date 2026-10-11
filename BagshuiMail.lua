@@ -49,12 +49,19 @@ local function questItem(item)
 	return item.type == "Quest"
 end
 
-local function altCategories()
+local function bagshuiParts()
+	if not Bagshui or not Bagshui.components then
+		return nil
+	end
+	return Bagshui.components.Bags, Bagshui.components.Categories, Bagshui.components.ItemInfo
+end
+
+local function altCategories(categories)
 	local list = {}
-	if not BsCategories or not BsCategories.list then
+	if not categories or not categories.list then
 		return list
 	end
-	for id, category in pairs(BsCategories.list) do
+	for id, category in pairs(categories.list) do
 		local name = category.name
 		local key = name and string.lower(name)
 		if key and ALTS[key] then
@@ -76,13 +83,20 @@ local function altCategories()
 	return list
 end
 
-local function itemForSlot(bag, slot)
+local function itemFromCacheOrLink(itemInfo, bag, slot, cached)
+	if cached and cached.id and cached.id > 0 and cached.emptySlot ~= 1 then
+		cached.bagNum = cached.bagNum or bag
+		cached.slotNum = cached.slotNum or slot
+		return cached
+	end
 	local link = GetContainerItemLink(bag, slot)
-	if not link or not BsItemInfo then
+	if not link or not itemInfo then
 		return nil
 	end
 	local item = {}
-	BsItemInfo:Get(link, item, true, true)
+	if not itemInfo:Get(link, item, true, true) then
+		return nil
+	end
 	if not item.id or item.id == 0 then
 		return nil
 	end
@@ -92,7 +106,21 @@ local function itemForSlot(bag, slot)
 end
 
 local function collect()
-	local cats = altCategories()
+	local bags, categories, itemInfo = bagshuiParts()
+	if not bags or not categories or not itemInfo then
+		say("Bagshui is not ready.")
+		return {}
+	end
+	local cats = altCategories(categories)
+	if getn(cats) == 0 then
+		say("Bagshui has no alt categories.")
+		return {}
+	end
+	bags.forceCacheUpdate = true
+	bags.forceFullCacheUpdate = true
+	if bags.UpdateCache then
+		bags:UpdateCache()
+	end
 	local found = {}
 	local bag
 	for bag = 0, 4 do
@@ -101,11 +129,12 @@ local function collect()
 		for slot = 1, slots do
 			local _, count, locked = GetContainerItemInfo(bag, slot)
 			if count and count > 0 and locked ~= 1 then
-				local item = itemForSlot(bag, slot)
+				local cached = bags.inventory and bags.inventory[bag] and bags.inventory[bag][slot]
+				local item = itemFromCacheOrLink(itemInfo, bag, slot, cached)
 				if item and not soulbound(item) and not questItem(item) then
 					local i
 					for i = 1, getn(cats) do
-						if BsCategories:MatchCategory(cats[i].id, item) then
+						if categories:MatchCategory(cats[i].id, item) then
 							table.insert(found, { bag, slot, cats[i].name })
 							break
 						end
