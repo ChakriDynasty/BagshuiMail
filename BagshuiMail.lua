@@ -136,29 +136,83 @@ local function namesMatch(a, b)
 	return a and b and string.lower(a) == string.lower(b)
 end
 
--- The bag group and the item list both have to name the same alt.
--- If they disagree, the stack is not mailed.
-local function classify(categories, cats, bags, item)
-	local shown = nil
-	local cached = bags and bags.inventory and bags.inventory[item.bagNum] and bags.inventory[item.bagNum][item.slotNum]
-	if cached and cached.id == item.id and cached.bagNum == item.bagNum and cached.slotNum == item.slotNum then
-		shown = altNameForCategoryId(categories, cached.bagshuiCategoryId)
+local function listHasId(list, itemId)
+	if type(list) ~= "table" then
+		return false
 	end
-	local matched = nil
-	local i
-	for i = 1, getn(cats) do
-		if categories:MatchCategory(cats[i].id, item) then
-			matched = cats[i].name
-			break
+	local _, id
+	for _, id in pairs(list) do
+		if id == itemId or tonumber(id) == itemId then
+			return true
 		end
 	end
-	if shown and matched and not namesMatch(shown, matched) then
-		return nil, true
+	return false
+end
+
+-- Ore, cloth, leather, food, wood, and herbs are claimed by item id
+-- before Madajunk is even considered.
+local function listedAlt(categories, cats, itemId)
+	local i
+	for i = 1, getn(cats) do
+		if not namesMatch(cats[i].name, "Madajunk") and not namesMatch(cats[i].name, "Madaboe") then
+			local category = categories.list[cats[i].id]
+			if not category and tonumber(cats[i].id) then
+				category = categories.list[tonumber(cats[i].id)]
+			end
+			if category and listHasId(category.list, itemId) then
+				return cats[i].name
+			end
+		end
 	end
-	if shown and not matched then
-		return nil, true
+	return nil
+end
+
+local function isJunkItem(item)
+	if item.quality == 0 then
+		return true
 	end
-	return matched or shown, false
+	if item.type == "Armor" and item.quality == 1 then
+		return true
+	end
+	return false
+end
+
+local function classify(categories, cats, bags, item)
+	local listed = listedAlt(categories, cats, item.id)
+	if listed then
+		return listed, false
+	end
+	if isJunkItem(item) then
+		return "Madajunk", false
+	end
+	local i
+	for i = 1, getn(cats) do
+		if namesMatch(cats[i].name, "Madaboe") and categories:MatchCategory(cats[i].id, item) then
+			return "Madaboe", false
+		end
+	end
+	return nil, false
+end
+
+local function junkBlocked(stack)
+	if not namesMatch(stack.name, "Madajunk") then
+		return false
+	end
+	local bags, categories, itemInfo = bagshuiParts()
+	if not categories or not itemInfo then
+		return true
+	end
+	local item = liveItem(itemInfo, stack.bag, stack.slot)
+	if not item or item.id ~= stack.id then
+		return true
+	end
+	if listedAlt(categories, altCategories(categories), item.id) then
+		return true
+	end
+	if not isJunkItem(item) then
+		return true
+	end
+	return false
 end
 
 local function sameStack(stack)
@@ -223,11 +277,8 @@ local function nextStack()
 				if count and count > 0 and locked ~= 1 then
 					local item = liveItem(itemInfo, bag, slot)
 					if item and not soulbound(item) and not questItem(item) then
-						local who, split = classify(categories, cats, bags, item)
-						if split then
-							skipped[key] = true
-							say("Skipped " .. (item.name or "item") .. ". The bag group and the item list do not agree.")
-						elseif who and (not me or not namesMatch(me, who)) then
+						local who = classify(categories, cats, bags, item)
+						if who and (not me or not namesMatch(me, who)) then
 							return {
 								bag = bag,
 								slot = slot,
@@ -298,6 +349,11 @@ local function sendOne(stack)
 		TurtleMail.sendmail_clear()
 		return nil
 	end
+	if junkBlocked(stack) then
+		TurtleMail.sendmail_clear()
+		stop("Stopped. Refused to send " .. stack.itemName .. " to Madajunk.")
+		return nil
+	end
 	if not sameStack(stack) or not rowIsOnly(stack) then
 		skipped[stack.bag .. ":" .. stack.slot] = true
 		TurtleMail.sendmail_clear()
@@ -334,7 +390,9 @@ local function sendNext()
 	setStatus(stack.itemName .. " to " .. stack.name)
 	local ok = sendOne(stack)
 	if ok == nil then
-		stop("Stopped. The recipient box did not stay on " .. stack.name .. ".")
+		if sending then
+			stop("Stopped. The recipient box did not stay on " .. stack.name .. ".")
+		end
 		return
 	end
 	if not ok then
