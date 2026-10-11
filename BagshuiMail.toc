@@ -1,0 +1,9 @@
+## Interface: 11200
+## Title: Bagshui |cff66ccffMail|r
+## Notes: Mail Bagshui categories to the alt with the same name
+## Author: ChakriDynasty
+## Version: 1.0.0
+## Dependencies: Bagshui
+## OptionalDeps: TurtleMail
+
+BagshuiMail.lua
