@@ -167,6 +167,25 @@ local function listedAlt(categories, cats, itemId)
 	return nil
 end
 
+local function categoryNamed(categories, cats, name)
+	local i
+	for i = 1, getn(cats) do
+		if namesMatch(cats[i].name, name) then
+			local category = categories.list[cats[i].id]
+			if not category and tonumber(cats[i].id) then
+				category = categories.list[tonumber(cats[i].id)]
+			end
+			return category
+		end
+	end
+	return nil
+end
+
+local function onMadajunkList(categories, cats, itemId)
+	local category = categoryNamed(categories, cats, "Madajunk")
+	return category and listHasId(category.list, itemId)
+end
+
 local function isTool(categories, bags, item)
 	if not categories or not categories.list or not item or not item.id then
 		return false
@@ -204,6 +223,9 @@ local function classify(categories, cats, bags, item)
 	if isTool(categories, bags, item) then
 		return nil, false
 	end
+	if onMadajunkList(categories, cats, item.id) then
+		return "Madajunk", false
+	end
 	local listed = listedAlt(categories, cats, item.id)
 	if listed then
 		return listed, false
@@ -235,7 +257,11 @@ local function junkBlocked(stack)
 	if isTool(categories, bags, item) then
 		return true
 	end
-	if listedAlt(categories, altCategories(categories), item.id) then
+	local cats = altCategories(categories)
+	if onMadajunkList(categories, cats, item.id) then
+		return false
+	end
+	if listedAlt(categories, cats, item.id) then
 		return true
 	end
 	if not isJunkItem(item) then

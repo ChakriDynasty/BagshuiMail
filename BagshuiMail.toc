@@ -2,7 +2,7 @@
 ## Title: Bagshui |cff66ccffMail|r
 ## Notes: Mail Bagshui categories to the alt with the same name
 ## Author: ChakriDynasty
-## Version: 1.0.7
+## Version: 1.0.8
 ## Dependencies: Bagshui
 ## OptionalDeps: TurtleMail
 
