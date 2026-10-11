@@ -12,14 +12,13 @@ local ALTS = {
 	madaboe = "Madaboe",
 }
 
--- TurtleMail.sendmail_load builds 21 attachment slots and sends them
--- one letter at a time from MAIL_SEND_SUCCESS.
-local BATCH = 21
-local queue = {}
+-- One stack per letter. The recipient is chosen from the item in the slot
+-- at the moment TurtleMail picks it up.
 local pending = 0
 local sending = false
 local advance = false
 local lastProgress = 0
+local skipped = {}
 local statusText
 local sendButton
 local hooked = false
@@ -83,12 +82,37 @@ local function altCategories(categories)
 	return list
 end
 
-local function itemFromCacheOrLink(itemInfo, bag, slot, cached)
-	if cached and cached.id and cached.id > 0 and cached.emptySlot ~= 1 then
-		cached.bagNum = cached.bagNum or bag
-		cached.slotNum = cached.slotNum or slot
-		return cached
+local function containerItemId(bag, slot)
+	local link = GetContainerItemLink(bag, slot)
+	if not link then
+		return nil
 	end
+	local _, _, id = string.find(link, "item:(%d+)")
+	return tonumber(id)
+end
+
+local function altNameForCategoryId(categories, categoryId)
+	if not categories or not categories.list or categoryId == nil or categoryId == "" then
+		return nil
+	end
+	local category = categories.list[categoryId]
+	if not category and tonumber(categoryId) then
+		category = categories.list[tonumber(categoryId)]
+	end
+	if not category or not category.name then
+		return nil
+	end
+	local key = string.lower(category.name)
+	if ALTS[key] then
+		return ALTS[key]
+	end
+	if category.name == "Bind on Equip" then
+		return "Madaboe"
+	end
+	return nil
+end
+
+local function liveItem(itemInfo, bag, slot)
 	local link = GetContainerItemLink(bag, slot)
 	if not link or not itemInfo then
 		return nil
@@ -105,76 +129,60 @@ local function itemFromCacheOrLink(itemInfo, bag, slot, cached)
 	return item
 end
 
-local function collect()
+local function recipientFor(categories, cats, bags, item)
+	local cached = bags and bags.inventory and bags.inventory[item.bagNum] and bags.inventory[item.bagNum][item.slotNum]
+	if cached and cached.id == item.id and cached.bagNum == item.bagNum and cached.slotNum == item.slotNum then
+		local shown = altNameForCategoryId(categories, cached.bagshuiCategoryId)
+		if shown then
+			return shown
+		end
+	end
+	local i
+	for i = 1, getn(cats) do
+		if categories:MatchCategory(cats[i].id, item) then
+			return cats[i].name
+		end
+	end
+	return nil
+end
+
+local function nextStack()
 	local bags, categories, itemInfo = bagshuiParts()
 	if not bags or not categories or not itemInfo then
-		say("Bagshui is not ready.")
-		return {}
+		return nil, "Bagshui is not ready."
 	end
 	local cats = altCategories(categories)
 	if getn(cats) == 0 then
-		say("Bagshui has no alt categories.")
-		return {}
+		return nil, "Bagshui has no alt categories."
 	end
-	bags.forceCacheUpdate = true
-	bags.forceFullCacheUpdate = true
-	if bags.UpdateCache then
-		bags:UpdateCache()
-	end
-	local found = {}
+	local me = UnitName("player")
 	local bag
 	for bag = 0, 4 do
 		local slots = GetContainerNumSlots(bag)
 		local slot
 		for slot = 1, slots do
-			local _, count, locked = GetContainerItemInfo(bag, slot)
-			if count and count > 0 and locked ~= 1 then
-				local cached = bags.inventory and bags.inventory[bag] and bags.inventory[bag][slot]
-				local item = itemFromCacheOrLink(itemInfo, bag, slot, cached)
-				if item and not soulbound(item) and not questItem(item) then
-					local i
-					for i = 1, getn(cats) do
-						if categories:MatchCategory(cats[i].id, item) then
-							table.insert(found, { bag, slot, cats[i].name })
-							break
+			local key = bag .. ":" .. slot
+			if not skipped[key] then
+				local _, count, locked = GetContainerItemInfo(bag, slot)
+				if count and count > 0 and locked ~= 1 then
+					local item = liveItem(itemInfo, bag, slot)
+					if item and not soulbound(item) and not questItem(item) then
+						local who = recipientFor(categories, cats, bags, item)
+						if who and (not me or string.lower(me) ~= string.lower(who)) then
+							return {
+								bag = bag,
+								slot = slot,
+								id = item.id,
+								name = who,
+								itemName = item.name or "Item",
+							}
 						end
 					end
 				end
 			end
 		end
 	end
-	return found
-end
-
-local function batchesFrom(found, size)
-	local byName = {}
-	local order = {}
-	local i
-	for i = 1, getn(found) do
-		local name = found[i][3]
-		if not byName[name] then
-			byName[name] = {}
-			table.insert(order, name)
-		end
-		table.insert(byName[name], { found[i][1], found[i][2] })
-	end
-	local out = {}
-	for i = 1, getn(order) do
-		local name = order[i]
-		local items = byName[name]
-		local startAt = 1
-		while startAt <= getn(items) do
-			local batch = {}
-			local n = startAt
-			while n <= getn(items) and getn(batch) < size do
-				table.insert(batch, items[n])
-				n = n + 1
-			end
-			table.insert(out, { name = name, items = batch })
-			startAt = n
-		end
-	end
-	return out
+	return nil
 end
 
 local function stop(reason)
@@ -182,7 +190,10 @@ local function stop(reason)
 	pending = 0
 	advance = false
 	lastProgress = 0
-	queue = {}
+	skipped = {}
+	if MailFrame and MailFrame:IsVisible() and TurtleMail and TurtleMail.sendmail_clear then
+		TurtleMail.sendmail_clear()
+	end
 	if sendButton then
 		sendButton:Enable()
 	end
@@ -197,55 +208,57 @@ local function turtleReady()
 		and TurtleMail.send_mail_button_onclick
 end
 
--- Same steps as using TurtleMail by hand:
--- open the Send tab, clear the attachment row, right-click each stack on,
--- type the alt, press Send. TurtleMail then mails one stack per letter.
-local function sendLikeTurtleMail(batch)
+-- TurtleMail picks the bag slot up when Send is pressed. Check the item id
+-- immediately before that, and send only that one stack.
+local function sendOne(stack)
+	if containerItemId(stack.bag, stack.slot) ~= stack.id then
+		return false
+	end
 	MailFrameTab_OnClick(2)
 	TurtleMail.sendmail_clear()
-	local attached = 0
-	local i
-	for i = 1, getn(batch.items) do
-		if TurtleMail.sendmail_set_attachment(batch.items[i]) then
-			attached = attached + 1
-		end
+	if containerItemId(stack.bag, stack.slot) ~= stack.id then
+		return false
 	end
-	if attached == 0 then
-		return 0
+	if not TurtleMail.sendmail_set_attachment({ stack.bag, stack.slot }) then
+		skipped[stack.bag .. ":" .. stack.slot] = true
+		TurtleMail.sendmail_clear()
+		return false
 	end
-	SendMailNameEditBox:SetText(batch.name)
-	MailSubjectEditBox:SetText(batch.name)
+	if containerItemId(stack.bag, stack.slot) ~= stack.id then
+		skipped[stack.bag .. ":" .. stack.slot] = true
+		TurtleMail.sendmail_clear()
+		return false
+	end
+	SendMailNameEditBox:SetText(stack.name)
+	MailSubjectEditBox:SetText(stack.name)
 	SendMailBodyEditBox:SetText("")
 	TurtleMail.send_mail_button_onclick()
-	return attached
+	return true
 end
 
-local function startNext()
-	if getn(queue) == 0 then
-		stop("Done.")
-		return
-	end
-	local batch = table.remove(queue, 1)
-	local me = UnitName("player")
-	if me and string.lower(me) == string.lower(batch.name) then
-		setStatus("Skipped " .. batch.name .. " (that is this character).")
-		advance = true
+local function sendNext()
+	local stack, err = nextStack()
+	if not stack then
+		if err then
+			stop(err)
+		else
+			stop("Done.")
+		end
 		return
 	end
 	local price = GetSendMailPrice() or 30
-	if GetMoney() < price * getn(batch.items) then
+	if GetMoney() < price then
 		stop("Not enough money for postage.")
 		return
 	end
-	pending = sendLikeTurtleMail(batch)
+	pending = 1
 	lastProgress = GetTime()
-	if pending == 0 then
-		setStatus("Nothing mailable for " .. batch.name .. ".")
+	setStatus(stack.itemName .. " to " .. stack.name)
+	if not sendOne(stack) then
 		advance = true
 		return
 	end
-	setStatus("Sending " .. pending .. " to " .. batch.name)
-	say("Sending " .. pending .. " to " .. batch.name)
+	say(stack.itemName .. " to " .. stack.name)
 end
 
 local function beginSend()
@@ -260,19 +273,18 @@ local function beginSend()
 		say("Enable TurtleMail, then open the mailbox again.")
 		return
 	end
-	local found = collect()
-	if getn(found) == 0 then
-		setStatus("Nothing in those categories to send.")
+	skipped = {}
+	local stack, err = nextStack()
+	if not stack then
+		setStatus(err or "Nothing in those categories to send.")
 		return
 	end
-	queue = batchesFrom(found, BATCH)
 	sending = true
 	lastProgress = GetTime()
 	if sendButton then
 		sendButton:Disable()
 	end
-	say("Sending " .. getn(found) .. " stacks.")
-	startNext()
+	sendNext()
 end
 
 local function onSendSuccess()
@@ -390,7 +402,7 @@ events:SetScript("OnUpdate", function()
 	end
 	if advance then
 		advance = false
-		startNext()
+		sendNext()
 		return
 	end
 	if lastProgress > 0 and (GetTime() - lastProgress) > 20 then
