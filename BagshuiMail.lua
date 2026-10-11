@@ -18,7 +18,10 @@ local pending = 0
 local sending = false
 local advance = false
 local lastProgress = 0
+local holdUntil = 0
+local sentStack = nil
 local skipped = {}
+local SETTLE = 1
 local statusText
 local sendButton
 local hooked = false
@@ -129,21 +132,74 @@ local function liveItem(itemInfo, bag, slot)
 	return item
 end
 
-local function recipientFor(categories, cats, bags, item)
+local function namesMatch(a, b)
+	return a and b and string.lower(a) == string.lower(b)
+end
+
+-- The bag group and the item list both have to name the same alt.
+-- If they disagree, the stack is not mailed.
+local function classify(categories, cats, bags, item)
+	local shown = nil
 	local cached = bags and bags.inventory and bags.inventory[item.bagNum] and bags.inventory[item.bagNum][item.slotNum]
 	if cached and cached.id == item.id and cached.bagNum == item.bagNum and cached.slotNum == item.slotNum then
-		local shown = altNameForCategoryId(categories, cached.bagshuiCategoryId)
-		if shown then
-			return shown
-		end
+		shown = altNameForCategoryId(categories, cached.bagshuiCategoryId)
 	end
+	local matched = nil
 	local i
 	for i = 1, getn(cats) do
 		if categories:MatchCategory(cats[i].id, item) then
-			return cats[i].name
+			matched = cats[i].name
+			break
 		end
 	end
-	return nil
+	if shown and matched and not namesMatch(shown, matched) then
+		return nil, true
+	end
+	if shown and not matched then
+		return nil, true
+	end
+	return matched or shown, false
+end
+
+local function sameStack(stack)
+	local bags, categories, itemInfo = bagshuiParts()
+	if not bags or not categories or not itemInfo then
+		return false
+	end
+	if containerItemId(stack.bag, stack.slot) ~= stack.id then
+		return false
+	end
+	local item = liveItem(itemInfo, stack.bag, stack.slot)
+	if not item or item.id ~= stack.id then
+		return false
+	end
+	local who, split = classify(categories, altCategories(categories), bags, item)
+	if split or not namesMatch(who, stack.name) then
+		return false
+	end
+	return true
+end
+
+local function rowIsOnly(stack)
+	local count = 0
+	local hit = false
+	local i
+	for i = 1, 21 do
+		local btn = getglobal("MailAttachment" .. i)
+		if btn and btn.item then
+			count = count + 1
+			if btn.item[1] == stack.bag and btn.item[2] == stack.slot then
+				hit = true
+			end
+		end
+	end
+	return count == 1 and hit
+end
+
+local function nameBoxIs(stack)
+	local typed = SendMailNameEditBox:GetText()
+	local subject = MailSubjectEditBox and MailSubjectEditBox:GetText() or ""
+	return namesMatch(typed, stack.name) and namesMatch(subject, stack.name)
 end
 
 local function nextStack()
@@ -167,8 +223,11 @@ local function nextStack()
 				if count and count > 0 and locked ~= 1 then
 					local item = liveItem(itemInfo, bag, slot)
 					if item and not soulbound(item) and not questItem(item) then
-						local who = recipientFor(categories, cats, bags, item)
-						if who and (not me or string.lower(me) ~= string.lower(who)) then
+						local who, split = classify(categories, cats, bags, item)
+						if split then
+							skipped[key] = true
+							say("Skipped " .. (item.name or "item") .. ". The bag group and the item list do not agree.")
+						elseif who and (not me or not namesMatch(me, who)) then
 							return {
 								bag = bag,
 								slot = slot,
@@ -190,6 +249,8 @@ local function stop(reason)
 	pending = 0
 	advance = false
 	lastProgress = 0
+	holdUntil = 0
+	sentStack = nil
 	skipped = {}
 	if MailFrame and MailFrame:IsVisible() and TurtleMail and TurtleMail.sendmail_clear then
 		TurtleMail.sendmail_clear()
@@ -208,15 +269,16 @@ local function turtleReady()
 		and TurtleMail.send_mail_button_onclick
 end
 
--- TurtleMail picks the bag slot up when Send is pressed. Check the item id
--- immediately before that, and send only that one stack.
+-- Check the slot, the category, the attachment row, and the recipient box
+-- again immediately before TurtleMail picks the stack up.
 local function sendOne(stack)
-	if containerItemId(stack.bag, stack.slot) ~= stack.id then
+	if not sameStack(stack) then
 		return false
 	end
 	MailFrameTab_OnClick(2)
 	TurtleMail.sendmail_clear()
-	if containerItemId(stack.bag, stack.slot) ~= stack.id then
+	if not sameStack(stack) then
+		TurtleMail.sendmail_clear()
 		return false
 	end
 	if not TurtleMail.sendmail_set_attachment({ stack.bag, stack.slot }) then
@@ -224,7 +286,7 @@ local function sendOne(stack)
 		TurtleMail.sendmail_clear()
 		return false
 	end
-	if containerItemId(stack.bag, stack.slot) ~= stack.id then
+	if not sameStack(stack) or not rowIsOnly(stack) then
 		skipped[stack.bag .. ":" .. stack.slot] = true
 		TurtleMail.sendmail_clear()
 		return false
@@ -232,6 +294,22 @@ local function sendOne(stack)
 	SendMailNameEditBox:SetText(stack.name)
 	MailSubjectEditBox:SetText(stack.name)
 	SendMailBodyEditBox:SetText("")
+	if not nameBoxIs(stack) then
+		TurtleMail.sendmail_clear()
+		return nil
+	end
+	if not sameStack(stack) or not rowIsOnly(stack) then
+		skipped[stack.bag .. ":" .. stack.slot] = true
+		TurtleMail.sendmail_clear()
+		return false
+	end
+	sentStack = {
+		bag = stack.bag,
+		slot = stack.slot,
+		id = stack.id,
+		name = stack.name,
+		itemName = stack.itemName,
+	}
 	TurtleMail.send_mail_button_onclick()
 	return true
 end
@@ -254,7 +332,12 @@ local function sendNext()
 	pending = 1
 	lastProgress = GetTime()
 	setStatus(stack.itemName .. " to " .. stack.name)
-	if not sendOne(stack) then
+	local ok = sendOne(stack)
+	if ok == nil then
+		stop("Stopped. The recipient box did not stay on " .. stack.name .. ".")
+		return
+	end
+	if not ok then
 		advance = true
 		return
 	end
@@ -294,11 +377,8 @@ local function onSendSuccess()
 	pending = pending - 1
 	lastProgress = GetTime()
 	if pending <= 0 then
-		-- This batch is finished. TurtleMail's own update has already
-		-- cleared its send flag, so the next alt can use Send again.
-		advance = true
-	else
-		setStatus(pending .. " letters left in this batch.")
+		-- Wait, then confirm the stack actually left that bag slot.
+		holdUntil = GetTime() + SETTLE
 	end
 end
 
@@ -398,6 +478,19 @@ events:RegisterEvent("MAIL_SEND_SUCCESS")
 events:RegisterEvent("UI_ERROR_MESSAGE")
 events:SetScript("OnUpdate", function()
 	if not sending then
+		return
+	end
+	if holdUntil > 0 then
+		if GetTime() < holdUntil then
+			return
+		end
+		holdUntil = 0
+		if sentStack and containerItemId(sentStack.bag, sentStack.slot) == sentStack.id then
+			stop("Stopped. " .. sentStack.itemName .. " was still in the bag after mailing to " .. sentStack.name .. ".")
+			return
+		end
+		sentStack = nil
+		sendNext()
 		return
 	end
 	if advance then
